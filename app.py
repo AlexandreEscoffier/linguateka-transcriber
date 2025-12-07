@@ -5,6 +5,8 @@ from openai import OpenAI
 import subprocess
 import uuid
 import os
+import json
+
 
 app = FastAPI()
 
@@ -39,7 +41,12 @@ class TranslateRequest(BaseModel):
 
 class TranslateResponse(BaseModel):
     translations: dict[str, str]  # ex: {"en": "...", "fr": "..."}
+    
+class ThumbnailRequest(BaseModel):
+    url: str
 
+class ThumbnailResponse(BaseModel):
+    thumbnail_url: str
 
 
 # -------------------------
@@ -153,6 +160,34 @@ def translate_text_with_openai(text: str, targets: list[str]) -> dict[str, str]:
     return translations
 
 
+def fetch_thumbnail_url(url: str) -> str:
+    """
+    Utilise yt-dlp pour récupérer l'URL de la miniature d'une vidéo Instagram.
+    """
+    cmd = [
+        "yt-dlp",
+        "-J",          # JSON metadata
+        url,
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError("yt-dlp error: " + result.stderr)
+
+    info = json.loads(result.stdout)
+
+    thumb = info.get("thumbnail")
+    if not thumb:
+        thumbs = info.get("thumbnails") or []
+        if thumbs:
+            thumb = thumbs[-1].get("url")  # souvent la meilleure qualité
+
+    if not thumb:
+        raise RuntimeError("No thumbnail found for this URL.")
+
+    return thumb
+
+
 
 # -------------------------
 # ROUTE PRINCIPALE
@@ -203,3 +238,17 @@ async def translate(body: TranslateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
     return TranslateResponse(translations=translations)
+
+
+
+@app.post("/thumbnail", response_model=ThumbnailResponse)
+async def thumbnail(body: ThumbnailRequest):
+    """
+    Renvoie l'URL de la miniature d'une vidéo Instagram.
+    """
+    try:
+        thumb_url = fetch_thumbnail_url(body.url)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return ThumbnailResponse(thumbnail_url=thumb_url)
