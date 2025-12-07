@@ -32,6 +32,14 @@ class Segment(BaseModel):
 class TranscribeResponse(BaseModel):
     transcript: str
     segments: list[Segment]
+    
+class TranslateRequest(BaseModel):
+    text: str
+    targets: list[str]  # ex: ["en", "fr"]
+
+class TranslateResponse(BaseModel):
+    translations: dict[str, str]  # ex: {"en": "...", "fr": "..."}
+
 
 
 # -------------------------
@@ -96,6 +104,56 @@ def transcribe_with_diarization(video_path: Path) -> tuple[str, list[dict]]:
     return "\n".join(lines), segments
 
 
+
+def translate_text_with_openai(text: str, targets: list[str]) -> dict[str, str]:
+    """
+    Traduction du texte vers plusieurs langues.
+    targets contient des codes comme "en", "fr".
+    On renvoie un dict { "en": "…", "fr": "…" }.
+    """
+    # mapping des codes -> noms lisibles
+    lang_names = {
+        "en": "English",
+        "fr": "French",
+    }
+
+    translations: dict[str, str] = {}
+
+    for code in targets:
+        code_lower = code.lower()
+        if code_lower not in lang_names:
+            continue  # ignore les langues inconnues
+
+        lang_label = lang_names[code_lower]
+
+        completion = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a professional translator. "
+                        "You translate text precisely while keeping the meaning natural."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Translate the following text into {lang_label}. "
+                        "Only answer with the translated text, nothing else.\n\n"
+                        f"{text}"
+                    ),
+                },
+            ],
+        )
+
+        translated = completion.choices[0].message.content.strip()
+        translations[code_lower] = translated
+
+    return translations
+
+
+
 # -------------------------
 # ROUTE PRINCIPALE
 # -------------------------
@@ -120,3 +178,28 @@ async def transcribe_instagram(body: TranscribeRequest):
         transcript=transcript_text,
         segments=[Segment(**s) for s in segs]
     )
+    
+
+
+@app.post("/translate", response_model=TranslateResponse)
+async def translate(body: TranslateRequest):
+    """
+    Traduit body.text dans les langues demandées dans body.targets.
+    Ex: targets = ["en", "fr"].
+    """
+    if not body.text.strip():
+        raise HTTPException(status_code=400, detail="Text is empty.")
+
+    # On ne garde que les codes connus
+    requested = [t.lower() for t in body.targets or []]
+    allowed = [c for c in requested if c in ("en", "fr")]
+
+    if not allowed:
+        raise HTTPException(status_code=400, detail="No valid target languages provided.")
+
+    try:
+        translations = translate_text_with_openai(body.text, allowed)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return TranslateResponse(translations=translations)
