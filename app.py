@@ -7,19 +7,15 @@ import uuid
 import os
 import json
 
-
 app = FastAPI()
 
-# OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Dossier de téléchargement
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-
 # -------------------------
-# MODELES DE REQUETE / REPONSE
+# MODELES
 # -------------------------
 
 class TranscribeRequest(BaseModel):
@@ -34,85 +30,24 @@ class Segment(BaseModel):
 class TranscribeResponse(BaseModel):
     transcript: str
     segments: list[Segment]
-    
+
 class TranslateRequest(BaseModel):
     text: str
-    targets: list[str]  # ex: ["en", "fr"]
+    targets: list[str]
 
 class TranslateResponse(BaseModel):
-    translations: dict[str, str]  # ex: {"en": "...", "fr": "..."}
-    
+    translations: dict[str, str]
+
 class ThumbnailRequest(BaseModel):
     url: str
 
 class ThumbnailResponse(BaseModel):
     thumbnail_url: str
 
-
 # -------------------------
-# FONCTION : télécharger la vidéo
-# -------------------------
-
-def download_instagram_video(url: str) -> Path:
-    """Télécharge une vidéo Instagram avec yt-dlp et renvoie le chemin local."""
-    uid = uuid.uuid4().hex
-    template = DOWNLOAD_DIR / f"{uid}.%(ext)s"
-
-    cmd = [
-        "yt-dlp",
-        "-f", "mp4",
-        "-o", str(template),
-        url,
-    ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError("yt-dlp error: " + result.stderr)
-
-    # Trouver le fichier téléchargé
-    videos = list(DOWNLOAD_DIR.glob(f"{uid}.*"))
-    if not videos:
-        raise FileNotFoundError("Aucun fichier téléchargé")
-
-    return videos[0]
-
-
-# -------------------------
-# FONCTION : Transcrire avec diarisation
+# HELPERS
 # -------------------------
 
-def transcribe_with_diarization(video_path: Path) -> tuple[str, list[dict]]:
-    with open(video_path, "rb") as f:
-        tr = client.audio.transcriptions.create(
-            model="gpt-4o-transcribe-diarize",
-            file=f,
-            response_format="diarized_json",
-            chunking_strategy="auto",
-        )
-
-    lines = []
-    segments = []
-
-    for seg in tr.segments:
-        speaker = seg.speaker
-        text = seg.text.strip()
-        if not text:
-            continue
-
-        lines.append(f"{speaker}: {text}")
-
-        segments.append({
-            "speaker": speaker,
-            "text": text,
-            "start": seg.start,
-            "end": seg.end,
-        })
-
-    return "\n".join(lines), segments
-
-
-
-# Mapping des codes -> noms lisibles (GLOBAL)
 LANG_NAMES = {
     "en": "English",
     "fr": "French",
@@ -137,13 +72,48 @@ LANG_NAMES = {
     "zh": "Chinese",
 }
 
+def download_instagram_video(url: str) -> Path:
+    uid = uuid.uuid4().hex
+    template = DOWNLOAD_DIR / f"{uid}.%(ext)s"
+
+    cmd = ["yt-dlp", "-f", "mp4", "-o", str(template), url]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        raise RuntimeError("yt-dlp error: " + result.stderr)
+
+    videos = list(DOWNLOAD_DIR.glob(f"{uid}.*"))
+    if not videos:
+        raise FileNotFoundError("Aucun fichier téléchargé")
+
+    return videos[0]
+
+def transcribe_with_diarization(video_path: Path) -> tuple[str, list[dict]]:
+    with open(video_path, "rb") as f:
+        tr = client.audio.transcriptions.create(
+            model="gpt-4o-transcribe-diarize",
+            file=f,
+            response_format="diarized_json",
+            chunking_strategy="auto",
+        )
+
+    lines = []
+    segments = []
+
+    for seg in tr.segments:
+        speaker = seg.speaker
+        text = (seg.text or "").strip()
+        if not text:
+            continue
+
+        lines.append(f"{speaker}: {text}")
+        segments.append(
+            {"speaker": speaker, "text": text, "start": seg.start, "end": seg.end}
+        )
+
+    return "\n".join(lines), segments
 
 def translate_text_with_openai(text: str, targets: list[str]) -> dict[str, str]:
-    """
-    Traduction du texte vers plusieurs langues.
-    targets contient des codes comme "en", "fr", "pl".
-    On renvoie un dict { "en": "…", "fr": "…" }.
-    """
     translations: dict[str, str] = {}
 
     for code in targets:
@@ -177,13 +147,54 @@ def translate_text_with_openai(text: str, targets: list[str]) -> dict[str, str]:
 
     return translations
 
+def fetch_thumbnail_url(url: str) -> str:
+    cmd = ["yt-dlp", "-J", url]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        raise RuntimeError("yt-dlp error: " + result.stderr)
+
+    info = json.loads(result.stdout)
+
+    thumb = info.get("thumbnail")
+    if not thumb:
+        thumbs = info.get("thumbnails") or []
+        if thumbs:
+            thumb = thumbs[-1].get("url")
+
+    if not thumb:
+        raise RuntimeError("No thumbnail found for this URL.")
+
+    return thumb
+
+# -------------------------
+# ROUTES
+# -------------------------
+
+@app.post("/transcribe-instagram", response_model=TranscribeResponse)
+async def transcribe_instagram(body: TranscribeRequest):
+    if not body.url.strip():
+        raise HTTPException(status_code=400, detail="URL is empty.")
+
+    video_path: Path | None = None
+    try:
+        video_path = download_instagram_video(body.url)
+        transcript_text, segs = transcribe_with_diarization(video_path)
+        return TranscribeResponse(
+            transcript=transcript_text,
+            segments=[Segment(**s) for s in segs],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        try:
+            if video_path and video_path.exists():
+                video_path.unlink()
+        except:
+            pass
 
 @app.post("/translate", response_model=TranslateResponse)
 async def translate(body: TranslateRequest):
-    """
-    Traduit body.text dans les langues demandées dans body.targets.
-    Ex: targets = ["en", "fr", "pl"].
-    """
     if not body.text.strip():
         raise HTTPException(status_code=400, detail="Text is empty.")
 
@@ -195,20 +206,14 @@ async def translate(body: TranslateRequest):
 
     try:
         translations = translate_text_with_openai(body.text, allowed)
+        return TranslateResponse(translations=translations)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return TranslateResponse(translations=translations)
-
-
 @app.post("/thumbnail", response_model=ThumbnailResponse)
 async def thumbnail(body: ThumbnailRequest):
-    """
-    Renvoie l'URL de la miniature d'une vidéo Instagram.
-    """
     try:
         thumb_url = fetch_thumbnail_url(body.url)
+        return ThumbnailResponse(thumbnail_url=thumb_url)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-    return ThumbnailResponse(thumbnail_url=thumb_url)
