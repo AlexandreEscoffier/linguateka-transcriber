@@ -112,26 +112,45 @@ def transcribe_with_diarization(video_path: Path) -> tuple[str, list[dict]]:
 
 
 
+# Mapping des codes -> noms lisibles (GLOBAL)
+LANG_NAMES = {
+    "en": "English",
+    "fr": "French",
+    "pl": "Polish",
+    "de": "German",
+    "es": "Spanish",
+    "pt": "Portuguese",
+    "it": "Italian",
+    "ru": "Russian",
+    "no": "Norwegian",
+    "sv": "Swedish",
+    "fi": "Finnish",
+    "nl": "Dutch",
+    "uk": "Ukrainian",
+    "cs": "Czech",
+    "sk": "Slovak",
+    "ro": "Romanian",
+    "el": "Greek",
+    "sr": "Serbian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese",
+}
+
+
 def translate_text_with_openai(text: str, targets: list[str]) -> dict[str, str]:
     """
     Traduction du texte vers plusieurs langues.
-    targets contient des codes comme "en", "fr".
+    targets contient des codes comme "en", "fr", "pl".
     On renvoie un dict { "en": "…", "fr": "…" }.
     """
-    # mapping des codes -> noms lisibles
-    lang_names = {
-        "en": "English",
-        "fr": "French",
-    }
-
     translations: dict[str, str] = {}
 
     for code in targets:
-        code_lower = code.lower()
-        if code_lower not in lang_names:
-            continue  # ignore les langues inconnues
-
-        lang_label = lang_names[code_lower]
+        code_lower = (code or "").lower().strip()
+        lang_label = LANG_NAMES.get(code_lower)
+        if not lang_label:
+            continue
 
         completion = client.chat.completions.create(
             model="gpt-4.1-mini",
@@ -154,80 +173,22 @@ def translate_text_with_openai(text: str, targets: list[str]) -> dict[str, str]:
             ],
         )
 
-        translated = completion.choices[0].message.content.strip()
-        translations[code_lower] = translated
+        translations[code_lower] = completion.choices[0].message.content.strip()
 
     return translations
-
-
-def fetch_thumbnail_url(url: str) -> str:
-    """
-    Utilise yt-dlp pour récupérer l'URL de la miniature d'une vidéo Instagram.
-    """
-    cmd = [
-        "yt-dlp",
-        "-J",          # JSON metadata
-        url,
-    ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError("yt-dlp error: " + result.stderr)
-
-    info = json.loads(result.stdout)
-
-    thumb = info.get("thumbnail")
-    if not thumb:
-        thumbs = info.get("thumbnails") or []
-        if thumbs:
-            thumb = thumbs[-1].get("url")  # souvent la meilleure qualité
-
-    if not thumb:
-        raise RuntimeError("No thumbnail found for this URL.")
-
-    return thumb
-
-
-
-# -------------------------
-# ROUTE PRINCIPALE
-# -------------------------
-
-@app.post("/transcribe-instagram", response_model=TranscribeResponse)
-async def transcribe_instagram(body: TranscribeRequest):
-
-    try:
-        video_path = download_instagram_video(body.url)
-        transcript_text, segs = transcribe_with_diarization(video_path)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        # Nettoyage du fichier téléchargé
-        try:
-            if "video_path" in locals() and video_path.exists():
-                video_path.unlink()
-        except:
-            pass
-
-    return TranscribeResponse(
-        transcript=transcript_text,
-        segments=[Segment(**s) for s in segs]
-    )
-    
 
 
 @app.post("/translate", response_model=TranslateResponse)
 async def translate(body: TranslateRequest):
     """
     Traduit body.text dans les langues demandées dans body.targets.
-    Ex: targets = ["en", "fr"].
+    Ex: targets = ["en", "fr", "pl"].
     """
     if not body.text.strip():
         raise HTTPException(status_code=400, detail="Text is empty.")
 
-    # On ne garde que les codes connus
-    requested = [t.lower() for t in body.targets or []]
-    allowed = [c for c in requested if c in ("en", "fr")]
+    requested = [(t or "").lower().strip() for t in (body.targets or [])]
+    allowed = [c for c in requested if c in LANG_NAMES]
 
     if not allowed:
         raise HTTPException(status_code=400, detail="No valid target languages provided.")
@@ -238,7 +199,6 @@ async def translate(body: TranslateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
     return TranslateResponse(translations=translations)
-
 
 
 @app.post("/thumbnail", response_model=ThumbnailResponse)
