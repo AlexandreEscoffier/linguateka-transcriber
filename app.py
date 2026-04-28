@@ -2,12 +2,54 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from pathlib import Path
 from openai import OpenAI
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from starlette.responses import Response
 import subprocess
 import uuid
 import os
 import json
 
 app = FastAPI()
+
+REQUEST_COUNT = Counter(
+    "fastapi_requests_total",
+    "Total HTTP requests",
+    ["method", "endpoint", "http_status"]
+)
+
+REQUEST_LATENCY = Histogram(
+    "fastapi_request_duration_seconds",
+    "HTTP request latency in seconds",
+    ["method", "endpoint"]
+)
+
+@app.middleware("http")
+async def prometheus_metrics_middleware(request: Request, call_next):
+    start_time = time.time()
+
+    response = await call_next(request)
+
+    duration = time.time() - start_time
+    endpoint = request.url.path
+
+    REQUEST_COUNT.labels(
+        method=request.method,
+        endpoint=endpoint,
+        http_status=response.status_code
+    ).inc()
+
+    REQUEST_LATENCY.labels(
+        method=request.method,
+        endpoint=endpoint
+    ).observe(duration)
+
+    return response
+
+@app.get("/metrics")
+def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -217,3 +259,4 @@ async def thumbnail(body: ThumbnailRequest):
         return ThumbnailResponse(thumbnail_url=thumb_url)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
