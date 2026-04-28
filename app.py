@@ -27,25 +27,35 @@ REQUEST_LATENCY = Histogram(
 
 @app.middleware("http")
 async def prometheus_metrics_middleware(request: Request, call_next):
+    if request.url.path == "/metrics":
+        return await call_next(request)
+
     start_time = time.time()
-
-    response = await call_next(request)
-
-    duration = time.time() - start_time
     endpoint = request.url.path
+    status_code = 500
 
-    REQUEST_COUNT.labels(
-        method=request.method,
-        endpoint=endpoint,
-        http_status=response.status_code
-    ).inc()
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
 
-    REQUEST_LATENCY.labels(
-        method=request.method,
-        endpoint=endpoint
-    ).observe(duration)
+    except Exception as e:
+        status_code = 500
+        raise e
 
-    return response
+    finally:
+        duration = time.time() - start_time
+
+        REQUEST_COUNT.labels(
+            method=request.method,
+            endpoint=endpoint,
+            http_status=str(status_code)
+        ).inc()
+
+        REQUEST_LATENCY.labels(
+            method=request.method,
+            endpoint=endpoint
+        ).observe(duration)
 
 @app.get("/metrics")
 def metrics():
