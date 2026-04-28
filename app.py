@@ -1,13 +1,15 @@
-from fastapi import FastAPI, HTTPException
+import time
+import subprocess
+import uuid
+import os
+import json
+
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from pathlib import Path
 from openai import OpenAI
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
-import subprocess
-import uuid
-import os
-import json
 
 app = FastAPI()
 
