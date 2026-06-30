@@ -1,54 +1,13 @@
-import time
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from pathlib import Path
+from openai import OpenAI
 import subprocess
 import uuid
 import os
 import json
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from pathlib import Path
-from openai import OpenAI
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
-from starlette.responses import Response
-
 app = FastAPI()
-
-# -------------------------
-# PROMETHEUS METRICS
-# -------------------------
-
-REQUEST_COUNT = Counter(
-    "fastapi_requests_total",
-    "Total HTTP requests",
-    ["endpoint", "http_status"]
-)
-
-REQUEST_LATENCY = Histogram(
-    "fastapi_request_duration_seconds",
-    "HTTP request latency in seconds",
-    ["endpoint"]
-)
-
-
-@app.get("/")
-def root():
-    return {
-        "api": "linguateka-transcriber",
-        "status": "ok",
-        "endpoints": [
-            {"method": "GET",  "path": "/",                    "description": "API info and health check"},
-            {"method": "GET",  "path": "/metrics",             "description": "Prometheus metrics"},
-            {"method": "POST", "path": "/transcribe-instagram","description": "Transcribe an Instagram video"},
-            {"method": "POST", "path": "/translate",           "description": "Translate text into one or more languages"},
-            {"method": "POST", "path": "/thumbnail",           "description": "Fetch the thumbnail URL of a video"},
-        ],
-    }
-
-
-@app.get("/metrics")
-def metrics():
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -62,35 +21,28 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 class TranscribeRequest(BaseModel):
     url: str
 
-
 class Segment(BaseModel):
     speaker: str
     text: str
     start: float
     end: float
 
-
 class TranscribeResponse(BaseModel):
     transcript: str
     segments: list[Segment]
-
 
 class TranslateRequest(BaseModel):
     text: str
     targets: list[str]
 
-
 class TranslateResponse(BaseModel):
     translations: dict[str, str]
-
 
 class ThumbnailRequest(BaseModel):
     url: str
 
-
 class ThumbnailResponse(BaseModel):
     thumbnail_url: str
-
 
 # -------------------------
 # HELPERS
@@ -120,31 +72,21 @@ LANG_NAMES = {
     "zh": "Chinese",
 }
 
-
 def download_instagram_video(url: str) -> Path:
     uid = uuid.uuid4().hex
     template = DOWNLOAD_DIR / f"{uid}.%(ext)s"
 
-    cmd = [
-        "yt-dlp",
-        "-f", "bestaudio[ext=m4a]/bestaudio/best",
-        "--no-playlist",
-        "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-        "--add-header", "Referer:https://www.instagram.com/",
-        "-o", str(template),
-        url
-]
+    cmd = ["yt-dlp", "-f", "mp4", "-o", str(template), url]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
         raise RuntimeError("yt-dlp error: " + result.stderr)
 
-    files = list(DOWNLOAD_DIR.glob(f"{uid}.*"))
-    if not files:
+    videos = list(DOWNLOAD_DIR.glob(f"{uid}.*"))
+    if not videos:
         raise FileNotFoundError("Aucun fichier téléchargé")
 
-    return files[0]
-
+    return videos[0]
 
 def transcribe_with_diarization(video_path: Path) -> tuple[str, list[dict]]:
     with open(video_path, "rb") as f:
@@ -161,20 +103,15 @@ def transcribe_with_diarization(video_path: Path) -> tuple[str, list[dict]]:
     for seg in tr.segments:
         speaker = seg.speaker
         text = (seg.text or "").strip()
-
         if not text:
             continue
 
         lines.append(f"{speaker}: {text}")
-        segments.append({
-            "speaker": speaker,
-            "text": text,
-            "start": seg.start,
-            "end": seg.end,
-        })
+        segments.append(
+            {"speaker": speaker, "text": text, "start": seg.start, "end": seg.end}
+        )
 
     return "\n".join(lines), segments
-
 
 def translate_text_with_openai(text: str, targets: list[str]) -> dict[str, str]:
     translations: dict[str, str] = {}
@@ -182,7 +119,6 @@ def translate_text_with_openai(text: str, targets: list[str]) -> dict[str, str]:
     for code in targets:
         code_lower = (code or "").lower().strip()
         lang_label = LANG_NAMES.get(code_lower)
-
         if not lang_label:
             continue
 
@@ -211,7 +147,6 @@ def translate_text_with_openai(text: str, targets: list[str]) -> dict[str, str]:
 
     return translations
 
-
 def fetch_thumbnail_url(url: str) -> str:
     cmd = ["yt-dlp", "-J", url]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -222,7 +157,6 @@ def fetch_thumbnail_url(url: str) -> str:
     info = json.loads(result.stdout)
 
     thumb = info.get("thumbnail")
-
     if not thumb:
         thumbs = info.get("thumbnails") or []
         if thumbs:
@@ -233,116 +167,53 @@ def fetch_thumbnail_url(url: str) -> str:
 
     return thumb
 
-
 # -------------------------
 # ROUTES
 # -------------------------
 
 @app.post("/transcribe-instagram", response_model=TranscribeResponse)
 async def transcribe_instagram(body: TranscribeRequest):
-    start_time = time.time()
-    status_code = "200"
+    if not body.url.strip():
+        raise HTTPException(status_code=400, detail="URL is empty.")
+
     video_path: Path | None = None
-
     try:
-        if not body.url.strip():
-            status_code = "400"
-            raise HTTPException(status_code=400, detail="URL is empty.")
-
         video_path = download_instagram_video(body.url)
         transcript_text, segs = transcribe_with_diarization(video_path)
-
         return TranscribeResponse(
             transcript=transcript_text,
             segments=[Segment(**s) for s in segs],
         )
-
-    except HTTPException as e:
-        status_code = str(e.status_code)
-        raise e
-
     except Exception as e:
-        status_code = "400"
         raise HTTPException(status_code=400, detail=str(e))
-
     finally:
-        REQUEST_COUNT.labels(
-            endpoint="/transcribe-instagram",
-            http_status=status_code
-        ).inc()
-
-        REQUEST_LATENCY.labels(
-            endpoint="/transcribe-instagram"
-        ).observe(time.time() - start_time)
-
         try:
             if video_path and video_path.exists():
                 video_path.unlink()
-        except Exception:
+        except:
             pass
-
 
 @app.post("/translate", response_model=TranslateResponse)
 async def translate(body: TranslateRequest):
-    start_time = time.time()
-    status_code = "200"
+    if not body.text.strip():
+        raise HTTPException(status_code=400, detail="Text is empty.")
+
+    requested = [(t or "").lower().strip() for t in (body.targets or [])]
+    allowed = [c for c in requested if c in LANG_NAMES]
+
+    if not allowed:
+        raise HTTPException(status_code=400, detail="No valid target languages provided.")
 
     try:
-        if not body.text.strip():
-            status_code = "400"
-            raise HTTPException(status_code=400, detail="Text is empty.")
-
-        requested = [(t or "").lower().strip() for t in (body.targets or [])]
-        allowed = [c for c in requested if c in LANG_NAMES]
-
-        if not allowed:
-            status_code = "400"
-            raise HTTPException(
-                status_code=400,
-                detail="No valid target languages provided."
-            )
-
         translations = translate_text_with_openai(body.text, allowed)
         return TranslateResponse(translations=translations)
-
-    except HTTPException as e:
-        status_code = str(e.status_code)
-        raise e
-
     except Exception as e:
-        status_code = "500"
         raise HTTPException(status_code=500, detail=str(e))
-
-    finally:
-        REQUEST_COUNT.labels(
-            endpoint="/translate",
-            http_status=status_code
-        ).inc()
-
-        REQUEST_LATENCY.labels(
-            endpoint="/translate"
-        ).observe(time.time() - start_time)
-
 
 @app.post("/thumbnail", response_model=ThumbnailResponse)
 async def thumbnail(body: ThumbnailRequest):
-    start_time = time.time()
-    status_code = "200"
-
     try:
         thumb_url = fetch_thumbnail_url(body.url)
         return ThumbnailResponse(thumbnail_url=thumb_url)
-
     except Exception as e:
-        status_code = "400"
         raise HTTPException(status_code=400, detail=str(e))
-
-    finally:
-        REQUEST_COUNT.labels(
-            endpoint="/thumbnail",
-            http_status=status_code
-        ).inc()
-
-        REQUEST_LATENCY.labels(
-            endpoint="/thumbnail"
-        ).observe(time.time() - start_time)
