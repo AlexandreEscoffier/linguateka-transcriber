@@ -129,10 +129,11 @@ def download_instagram_video(url: str) -> Path:
         "yt-dlp",
         "-f", "bestaudio[ext=m4a]/bestaudio/best",
         "--no-playlist",
+        "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "--add-header", "Referer:https://www.instagram.com/",
         "-o", str(template),
         url
-    ]
-
+]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
