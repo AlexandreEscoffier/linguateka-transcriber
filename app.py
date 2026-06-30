@@ -30,6 +30,21 @@ REQUEST_LATENCY = Histogram(
 )
 
 
+@app.get("/")
+def root():
+    return {
+        "api": "linguateka-transcriber",
+        "status": "ok",
+        "endpoints": [
+            {"method": "GET",  "path": "/",                    "description": "API info and health check"},
+            {"method": "GET",  "path": "/metrics",             "description": "Prometheus metrics"},
+            {"method": "POST", "path": "/transcribe-instagram","description": "Transcribe an Instagram video"},
+            {"method": "POST", "path": "/translate",           "description": "Translate text into one or more languages"},
+            {"method": "POST", "path": "/thumbnail",           "description": "Fetch the thumbnail URL of a video"},
+        ],
+    }
+
+
 @app.get("/metrics")
 def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
