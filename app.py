@@ -76,17 +76,24 @@ def download_instagram_video(url: str) -> Path:
     uid = uuid.uuid4().hex
     template = DOWNLOAD_DIR / f"{uid}.%(ext)s"
 
-    cmd = ["yt-dlp", "-f", "mp4", "-o", str(template), url]
+    cmd = [
+        "yt-dlp",
+        "-f", "bestaudio[ext=m4a]/bestaudio/best",
+        "--no-playlist",
+        "-o", str(template),
+        url
+    ]
+
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
         raise RuntimeError("yt-dlp error: " + result.stderr)
 
-    videos = list(DOWNLOAD_DIR.glob(f"{uid}.*"))
-    if not videos:
+    files = list(DOWNLOAD_DIR.glob(f"{uid}.*"))
+    if not files:
         raise FileNotFoundError("Aucun fichier téléchargé")
 
-    return videos[0]
+    return files[0]
 
 def transcribe_with_diarization(video_path: Path) -> tuple[str, list[dict]]:
     with open(video_path, "rb") as f:
