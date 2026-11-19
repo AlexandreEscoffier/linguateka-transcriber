@@ -244,6 +244,43 @@ async def transcribe_instagram(body: TranscribeRequest):
         transcription_start = time.perf_counter()
 
         transcript_text, segs = transcribe_with_diarization(video_path)
+        
+        
+        # BENCHMARK DU NOUVEAU MODELE
+        if os.getenv("BENCHMARK_TRANSCRIBE") == "1":
+            benchmark_start = time.perf_counter()
+
+            try:
+                with open(video_path, "rb") as f:
+                    result = client.audio.transcriptions.create(
+                        model="gpt-transcribe",
+                        file=f,
+                        response_format="json",
+                        languages=["pl"]
+                    )
+
+                benchmark_duration = (
+                    time.perf_counter() - benchmark_start
+                )
+
+                print(
+                    f"[BENCHMARK] gpt-transcribe : "
+                    f"{benchmark_duration:.2f} secondes",
+                    flush=True
+                )
+
+                print(
+                    f"[BENCHMARK] Nombre de caractères : "
+                    f"{len(result.text)}",
+                    flush=True
+                )
+
+            except Exception as e:
+                print(
+                    f"[BENCHMARK] Erreur : {e}",
+                    flush=True
+                )
+
 
         transcription_duration = time.perf_counter() - transcription_start
 
