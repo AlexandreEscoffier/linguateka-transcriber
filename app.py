@@ -1,3 +1,4 @@
+
 import time
 import subprocess
 import uuid
@@ -226,7 +227,6 @@ async def transcribe_instagram(body: TranscribeRequest):
             status_code = "400"
             raise HTTPException(status_code=400, detail="URL is empty.")
 
-        
         # 1. Mesurer le téléchargement
         download_start = time.perf_counter()
 
@@ -240,63 +240,63 @@ async def transcribe_instagram(body: TranscribeRequest):
             flush=True
         )
 
-        # 2. Mesurer la transcription OpenAI
+        # 2. Mesurer le modele actuel (avec diarisation)
         transcription_start = time.perf_counter()
-
         transcript_text, segs = transcribe_with_diarization(video_path)
-        
-        
-        # BENCHMARK DU NOUVEAU MODELE
-        if os.getenv("BENCHMARK_TRANSCRIBE") == "1":
-            benchmark_start = time.perf_counter()
+        transcription_duration = time.perf_counter() - transcription_start
 
+        print(
+            f"[LINGUATEKA] gpt-4o-transcribe-diarize termine : "
+            f"{transcription_duration:.2f} secondes",
+            flush=True,
+        )
+
+        # Total du parcours actuel, SANS le benchmark facultatif
+        total_duration = download_duration + transcription_duration
+        print(
+            f"[LINGUATEKA] TOTAL actuel (telechargement + transcription) : "
+            f"{total_duration:.2f} secondes",
+            flush=True,
+        )
+
+        # 3. Comparaison optionnelle avec un autre modele
+        benchmark_enabled = os.getenv("BENCHMARK_TRANSCRIBE", "0") == "1"
+        print(
+            f"[BENCHMARK] Activation : {int(benchmark_enabled)}",
+            flush=True,
+        )
+
+        if benchmark_enabled:
             try:
+                benchmark_start = time.perf_counter()
                 with open(video_path, "rb") as f:
                     result = client.audio.transcriptions.create(
                         model="gpt-transcribe",
                         file=f,
                         response_format="json",
-                        languages=["pl"]
+                        languages=["pl"],
                     )
-
-                benchmark_duration = (
-                    time.perf_counter() - benchmark_start
-                )
+                benchmark_duration = time.perf_counter() - benchmark_start
 
                 print(
                     f"[BENCHMARK] gpt-transcribe : "
                     f"{benchmark_duration:.2f} secondes",
-                    flush=True
+                    flush=True,
                 )
-
                 print(
-                    f"[BENCHMARK] Nombre de caractères : "
+                    f"[BENCHMARK] Nombre de caracteres : "
                     f"{len(result.text)}",
-                    flush=True
+                    flush=True,
                 )
-
-            except Exception as e:
+                difference = transcription_duration - benchmark_duration
                 print(
-                    f"[BENCHMARK] Erreur : {e}",
-                    flush=True
+                    f"[BENCHMARK] Gain du nouveau modele : "
+                    f"{difference:+.2f} secondes",
+                    flush=True,
                 )
-
-
-        transcription_duration = time.perf_counter() - transcription_start
-
-        print(
-            f"[LINGUATEKA] Transcription OpenAI terminée : "
-            f"{transcription_duration:.2f} secondes",
-            flush=True
-        )
-
-        # 3. Afficher le total
-        print(
-            f"[LINGUATEKA] TOTAL : "
-            f"{download_duration + transcription_duration:.2f} secondes",
-            flush=True
-        )
-
+            except Exception as e:
+                # L'echec du benchmark n'interrompt pas la transcription normale.
+                print(f"[BENCHMARK] Erreur : {e}", flush=True)
 
         return TranscribeResponse(
             transcript=transcript_text,
@@ -348,7 +348,7 @@ async def translate(body: TranslateRequest):
                 detail="No valid target languages provided."
             )
 
-        translations = translate_text_with_openai(body.text, allowed)
+        translations = translate_text_with_openai(text=body.text, targets=allowed)
         return TranslateResponse(translations=translations)
 
     except HTTPException as e:
