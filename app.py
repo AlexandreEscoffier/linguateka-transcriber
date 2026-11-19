@@ -226,8 +226,40 @@ async def transcribe_instagram(body: TranscribeRequest):
             status_code = "400"
             raise HTTPException(status_code=400, detail="URL is empty.")
 
+        
+        # 1. Mesurer le téléchargement
+        download_start = time.perf_counter()
+
         video_path = download_instagram_video(body.url)
+
+        download_duration = time.perf_counter() - download_start
+
+        print(
+            f"[LINGUATEKA] Téléchargement yt-dlp terminé : "
+            f"{download_duration:.2f} secondes",
+            flush=True
+        )
+
+        # 2. Mesurer la transcription OpenAI
+        transcription_start = time.perf_counter()
+
         transcript_text, segs = transcribe_with_diarization(video_path)
+
+        transcription_duration = time.perf_counter() - transcription_start
+
+        print(
+            f"[LINGUATEKA] Transcription OpenAI terminée : "
+            f"{transcription_duration:.2f} secondes",
+            flush=True
+        )
+
+        # 3. Afficher le total
+        print(
+            f"[LINGUATEKA] TOTAL : "
+            f"{download_duration + transcription_duration:.2f} secondes",
+            flush=True
+        )
+
 
         return TranscribeResponse(
             transcript=transcript_text,
