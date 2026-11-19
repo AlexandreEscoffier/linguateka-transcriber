@@ -1,4 +1,3 @@
-
 import time
 import subprocess
 import uuid
@@ -124,6 +123,50 @@ def download_instagram_video(url: str) -> Path:
     return videos[0]
 
 
+# Railway : TRANSCRIPTION_MODEL=gpt-transcribe (rapide, sans diarisation)
+# ou TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize (avec diarisation)
+TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "gpt-transcribe").strip()
+SUPPORTED_TRANSCRIPTION_MODELS = {
+    "gpt-transcribe",
+    "gpt-4o-transcribe-diarize",
+}
+
+if TRANSCRIPTION_MODEL not in SUPPORTED_TRANSCRIPTION_MODELS:
+    raise RuntimeError(
+        f"TRANSCRIPTION_MODEL non pris en charge : {TRANSCRIPTION_MODEL!r}. "
+        f"Choisir l'un des modeles : {sorted(SUPPORTED_TRANSCRIPTION_MODELS)}"
+    )
+
+
+def transcribe_video(video_path: Path) -> tuple[str, list[dict]]:
+    """Renvoie (transcript, segments), quel que soit le modele.
+
+    gpt-transcribe fournit le texte seul : segments=[] (aucun locuteur invente).
+    Le modele diarize renvoie le texte avec les locuteurs et leurs segments.
+    """
+    if TRANSCRIPTION_MODEL == "gpt-transcribe":
+        options = {
+            "model": "gpt-transcribe",
+            "response_format": "json",
+        }
+        # Optionnel : TRANSCRIPTION_LANGUAGE=pl sur Railway pour tester le polonais.
+        # Par defaut, laisser vide pour autodetection et plusieurs langues.
+        lang = os.getenv("TRANSCRIPTION_LANGUAGE", "").strip().lower()
+        if lang:
+            options["languages"] = [lang]
+
+        with open(video_path, "rb") as f:
+            tr = client.audio.transcriptions.create(file=f, **options)
+
+        transcript_text = (tr.text or "").strip()
+        if not transcript_text:
+            raise RuntimeError("Le modele gpt-transcribe n'a retourne aucun texte.")
+        return transcript_text, []
+
+    # Modele historique, avec identification des locuteurs.
+    return transcribe_with_diarization(video_path)
+
+
 def transcribe_with_diarization(video_path: Path) -> tuple[str, list[dict]]:
     with open(video_path, "rb") as f:
         tr = client.audio.transcriptions.create(
@@ -227,6 +270,7 @@ async def transcribe_instagram(body: TranscribeRequest):
             status_code = "400"
             raise HTTPException(status_code=400, detail="URL is empty.")
 
+        
         # 1. Mesurer le téléchargement
         download_start = time.perf_counter()
 
@@ -240,63 +284,29 @@ async def transcribe_instagram(body: TranscribeRequest):
             flush=True
         )
 
-        # 2. Mesurer le modele actuel (avec diarisation)
+        # 2. Transcrire avec le modele choisi dans Railway
+        print(f"[LINGUATEKA] Modele utilise : {TRANSCRIPTION_MODEL}", flush=True)
+
         transcription_start = time.perf_counter()
-        transcript_text, segs = transcribe_with_diarization(video_path)
+        transcript_text, segs = transcribe_video(video_path)
         transcription_duration = time.perf_counter() - transcription_start
 
         print(
-            f"[LINGUATEKA] gpt-4o-transcribe-diarize termine : "
+            f"[LINGUATEKA] Transcription {TRANSCRIPTION_MODEL} : "
             f"{transcription_duration:.2f} secondes",
             flush=True,
         )
-
-        # Total du parcours actuel, SANS le benchmark facultatif
-        total_duration = download_duration + transcription_duration
         print(
-            f"[LINGUATEKA] TOTAL actuel (telechargement + transcription) : "
-            f"{total_duration:.2f} secondes",
+            f"[LINGUATEKA] TOTAL (telechargement + transcription) : "
+            f"{download_duration + transcription_duration:.2f} secondes",
             flush=True,
         )
-
-        # 3. Comparaison optionnelle avec un autre modele
-        benchmark_enabled = os.getenv("BENCHMARK_TRANSCRIBE", "0") == "1"
-        print(
-            f"[BENCHMARK] Activation : {int(benchmark_enabled)}",
-            flush=True,
-        )
-
-        if benchmark_enabled:
-            try:
-                benchmark_start = time.perf_counter()
-                with open(video_path, "rb") as f:
-                    result = client.audio.transcriptions.create(
-                        model="gpt-transcribe",
-                        file=f,
-                        response_format="json",
-                        languages=["pl"],
-                    )
-                benchmark_duration = time.perf_counter() - benchmark_start
-
-                print(
-                    f"[BENCHMARK] gpt-transcribe : "
-                    f"{benchmark_duration:.2f} secondes",
-                    flush=True,
-                )
-                print(
-                    f"[BENCHMARK] Nombre de caracteres : "
-                    f"{len(result.text)}",
-                    flush=True,
-                )
-                difference = transcription_duration - benchmark_duration
-                print(
-                    f"[BENCHMARK] Gain du nouveau modele : "
-                    f"{difference:+.2f} secondes",
-                    flush=True,
-                )
-            except Exception as e:
-                # L'echec du benchmark n'interrompt pas la transcription normale.
-                print(f"[BENCHMARK] Erreur : {e}", flush=True)
+        if not segs:
+            print(
+                "[LINGUATEKA] Pas de diarisation : segments=[] ; "
+                "transcript contient le texte integral.",
+                flush=True,
+            )
 
         return TranscribeResponse(
             transcript=transcript_text,
@@ -348,7 +358,7 @@ async def translate(body: TranslateRequest):
                 detail="No valid target languages provided."
             )
 
-        translations = translate_text_with_openai(text=body.text, targets=allowed)
+        translations = translate_text_with_openai(body.text, allowed)
         return TranslateResponse(translations=translations)
 
     except HTTPException as e:
