@@ -6,7 +6,7 @@ import json
 import requests
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pathlib import Path
 from openai import OpenAI
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
@@ -49,11 +49,18 @@ class TranscribeRequest(BaseModel):
     url: str
 
 
+class WordTimestamp(BaseModel):
+    word: str
+    start: float
+    end: float
+
+
 class Segment(BaseModel):
     speaker: str
     text: str
     start: float
     end: float
+    words: list[WordTimestamp] = Field(default_factory=list)
 
 
 class TranscribeResponse(BaseModel):
@@ -141,21 +148,21 @@ if TRANSCRIPTION_MODEL not in SUPPORTED_TRANSCRIPTION_MODELS:
 
 
 def transcribe_video(video_path: Path) -> tuple[str, list[dict]]:
-    """Renvoie (transcript, segments), quel que soit le modele.
 
-    gpt-transcribe fournit le texte seul : segments=[] (aucun locuteur invente).
-    Le modele diarize renvoie le texte avec les locuteurs et leurs segments.
-    """
-    
+    # AssemblyAI
+    if TRANSCRIPTION_PROVIDER == "assemblyai":
+        result = transcribe_with_assemblyai(video_path)
+        return result["transcript"], result["segments"]
+
+    # Deepgram
     if TRANSCRIPTION_PROVIDER == "deepgram":
         result = transcribe_with_deepgram(video_path)
         return result["transcript"], result["segments"]
-    
+
+    # OpenAI
     if TRANSCRIPTION_MODEL == "gpt-transcribe":
-        options = {
-            "model": "gpt-transcribe",
-            "response_format": "json",
-        }
+        # Conserver ici ton code OpenAI existant
+
         # Optionnel : TRANSCRIPTION_LANGUAGE=pl sur Railway pour tester le polonais.
         # Par defaut, laisser vide pour autodetection et plusieurs langues.
         lang = os.getenv("TRANSCRIPTION_LANGUAGE", "").strip().lower()
@@ -513,3 +520,117 @@ def transcribe_with_deepgram(video_path):
         "raw_transcript": raw_transcript,
         "segments": segments,
     }
+    
+    
+def transcribe_with_assemblyai(video_path: Path):
+    api_key = os.environ["ASSEMBLYAI_API_KEY"]
+    base_url = "https://api.assemblyai.com/v2"
+    headers = {"authorization": api_key}
+
+    start_time = time.perf_counter()
+
+    # 1. Envoyer la vidéo à AssemblyAI
+    with open(video_path, "rb") as video:
+        response = requests.post(
+            f"{base_url}/upload",
+            headers=headers,
+            data=video,
+            timeout=(15, 120),
+        )
+
+    response.raise_for_status()
+    upload_url = response.json()["upload_url"]
+
+    # 2. Demander la transcription polonaise avec diarisation
+    payload = {
+        "audio_url": upload_url,
+        "speech_models": ["universal-2"],
+        "language_code": "pl",
+        "speaker_labels": True,
+    }
+
+    response = requests.post(
+        f"{base_url}/transcript",
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    transcript_id = response.json()["id"]
+
+    # 3. Attendre que le traitement soit terminé
+    deadline = time.monotonic() + 180
+
+    while time.monotonic() < deadline:
+        response = requests.get(
+            f"{base_url}/transcript/{transcript_id}",
+            headers=headers,
+            timeout=30,
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if result["status"] == "completed":
+            break
+
+        if result["status"] == "error":
+            raise RuntimeError(
+                f"AssemblyAI: {result.get('error')}"
+            )
+
+        time.sleep(2)
+    else:
+        raise TimeoutError(
+            f"AssemblyAI: délai dépassé, job {transcript_id}"
+        )
+
+    # 4. Convertir les données pour Linguateka
+    segments = []
+    lines = []
+
+    for utterance in result.get("utterances") or []:
+        speaker = utterance.get("speaker") or "?"
+        text = (utterance.get("text") or "").strip()
+
+        if not text:
+            continue
+
+        words = [
+            {
+                "word": word["text"],
+                "start": word["start"] / 1000,
+                "end": word["end"] / 1000,
+            }
+            for word in utterance.get("words") or []
+        ]
+
+        segments.append({
+            "speaker": speaker,
+            "text": text,
+            "start": utterance["start"] / 1000,
+            "end": utterance["end"] / 1000,
+            "words": words,
+        })
+
+        lines.append(f"{speaker}: {text}")
+
+    transcript = "\n".join(lines)
+
+    if not transcript:
+        raise RuntimeError(
+            "AssemblyAI n'a retourné aucun passage de parole."
+        )
+
+    duration = time.perf_counter() - start_time
+    print(
+        f"[ASSEMBLYAI] Terminé en {duration:.2f}s "
+        f"- {len(segments)} segments",
+        flush=True,
+    )
+
+    return {
+        "transcript": transcript,
+        "segments": segments,
+    }
+
