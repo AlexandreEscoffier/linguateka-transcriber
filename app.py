@@ -127,6 +127,7 @@ def download_instagram_video(url: str) -> Path:
 # Railway : TRANSCRIPTION_MODEL=gpt-transcribe (rapide, sans diarisation)
 # ou TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize (avec diarisation)
 TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "gpt-transcribe").strip()
+TRANSCRIPTION_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "openai").strip().lower()
 SUPPORTED_TRANSCRIPTION_MODELS = {
     "gpt-transcribe",
     "gpt-4o-transcribe-diarize",
