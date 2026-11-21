@@ -416,7 +416,7 @@ def transcribe_with_deepgram(video_path):
     api_key = os.environ["DEEPGRAM_API_KEY"]
 
     params = {
-        "model": "nova-3",
+        "model": os.getenv("DEEPGRAM_MODEL", "nova-3"),
         "language": "pl",
         "diarize_model": "latest",
         "utterances": "true",
@@ -442,6 +442,20 @@ def transcribe_with_deepgram(video_path):
 
     response.raise_for_status()
     data = response.json()
+    
+    words = (
+    data["results"]["channels"][0]
+    ["alternatives"][0].get("words", [])
+)
+
+    for word in words:
+        print(
+            f"[DIARIZATION] "
+            f"{word.get('start')}s "
+            f"speaker={word.get('speaker')} "
+            f"word={word.get('word')}",
+            flush=True
+        )
 
     print(
         f"Deepgram : {time.perf_counter() - start:.2f}s"
