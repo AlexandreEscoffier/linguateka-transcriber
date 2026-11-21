@@ -4,3 +4,4 @@ yt-dlp
 openai
 python-multipart
 prometheus-client
+requests

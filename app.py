@@ -3,6 +3,7 @@ import subprocess
 import uuid
 import os
 import json
+import requests
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -144,6 +145,11 @@ def transcribe_video(video_path: Path) -> tuple[str, list[dict]]:
     gpt-transcribe fournit le texte seul : segments=[] (aucun locuteur invente).
     Le modele diarize renvoie le texte avec les locuteurs et leurs segments.
     """
+    
+    if TRANSCRIPTION_PROVIDER == "deepgram":
+        result = transcribe_with_deepgram(video_path)
+        return result["transcript"], result["segments"]
+    
     if TRANSCRIPTION_MODEL == "gpt-transcribe":
         options = {
             "model": "gpt-transcribe",
@@ -402,3 +408,93 @@ async def thumbnail(body: ThumbnailRequest):
         REQUEST_LATENCY.labels(
             endpoint="/thumbnail"
         ).observe(time.time() - start_time)
+        
+
+
+def transcribe_with_deepgram(video_path):
+    api_key = os.environ["DEEPGRAM_API_KEY"]
+
+    params = {
+        "model": "nova-3",
+        "language": "pl",
+        "diarize_model": "latest",
+        "utterances": "true",
+        "punctuate": "true",
+        "smart_format": "true",
+    }
+
+    headers = {
+        "Authorization": f"Token {api_key}",
+        "Content-Type": "video/mp4",
+    }
+
+    start = time.perf_counter()
+
+    with open(video_path, "rb") as video:
+        response = requests.post(
+            "https://api.deepgram.com/v1/listen",
+            params=params,
+            headers=headers,
+            data=video,
+            timeout=(15, 180),
+        )
+
+    response.raise_for_status()
+    data = response.json()
+
+    print(
+        f"Deepgram : {time.perf_counter() - start:.2f}s"
+    )
+
+    results = data.get("results", {})
+    alternatives = (
+        results.get("channels", [{}])[0]
+        .get("alternatives", [{}])
+    )
+
+    raw_transcript = alternatives[0].get(
+        "transcript", ""
+    )
+
+    segments = []
+    lines = []
+
+    for utterance in results.get("utterances", []):
+        speaker_id = utterance.get("speaker")
+
+        speaker = (
+            chr(65 + speaker_id)
+            if isinstance(speaker_id, int)
+            and 0 <= speaker_id < 26
+            else "?"
+        )
+
+        text = utterance.get("transcript", "").strip()
+
+        segment = {
+            "speaker": speaker,
+            "start": utterance["start"],
+            "end": utterance["end"],
+            "text": text,
+            "words": [
+                {
+                    "word": word.get(
+                        "punctuated_word",
+                        word.get("word", "")
+                    ),
+                    "start": word["start"],
+                    "end": word["end"],
+                }
+                for word in utterance.get("words", [])
+            ],
+        }
+
+        segments.append(segment)
+        lines.append(f"{speaker}: {text}")
+
+    return {
+        "transcript": "\n".join(lines)
+            if lines else raw_transcript,
+        "raw_transcript": raw_transcript,
+        "segments": segments,
+    }
