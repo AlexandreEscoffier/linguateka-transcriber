@@ -150,6 +150,11 @@ if TRANSCRIPTION_MODEL not in SUPPORTED_TRANSCRIPTION_MODELS:
 
 def transcribe_video(video_path: Path) -> tuple[str, list[dict]]:
     """Renvoie (transcript, segments) selon le fournisseur."""
+    
+    # ElevenLabs Scribe v3
+    if TRANSCRIPTION_PROVIDER == "elevenlabs":
+        result = transcribe_with_elevenlabs(video_path)
+        return result["transcript"], result["segments"]
 
     # 1. AssemblyAI
     if TRANSCRIPTION_PROVIDER == "assemblyai":
@@ -646,6 +651,166 @@ def transcribe_with_assemblyai(video_path: Path):
     print(
         f"[ASSEMBLYAI] Terminé en {duration:.2f}s "
         f"- {len(segments)} segments",
+        flush=True,
+    )
+
+    return {
+        "transcript": transcript,
+        "segments": segments,
+    }
+
+
+
+def transcribe_with_elevenlabs(video_path: Path):
+    import mimetypes
+
+    api_key = os.environ["ELEVENLABS_API_KEY"]
+    model = os.getenv("ELEVENLABS_MODEL", "scribe_v3")
+    language = os.getenv("TRANSCRIPTION_LANGUAGE", "pl")
+
+    start = time.perf_counter()
+
+    headers = {
+        "xi-api-key": api_key
+    }
+
+    payload = {
+        "model_id": model,
+        "language_code": language,
+        "diarize": "true",
+        "timestamps_granularity": "word",
+        "tag_audio_events": "false",
+        "no_verbatim": "false",
+    }
+
+    mime = (
+        mimetypes.guess_type(str(video_path))[0]
+        or "application/octet-stream"
+    )
+
+    # Envoyer directement la vidéo téléchargée par yt-dlp
+    with open(video_path, "rb") as video:
+        response = requests.post(
+            "https://api.elevenlabs.io/v1/speech-to-text",
+            headers=headers,
+            data=payload,
+            files={
+                "file": (video_path.name, video, mime)
+            },
+            timeout=(20, 240),
+        )
+
+    if not response.ok:
+        raise RuntimeError(
+            f"ElevenLabs HTTP {response.status_code}: "
+            f"{response.text[:1000]}"
+        )
+
+    result = response.json()
+
+    # Les mots possèdent des horodatages en secondes
+    # et des identifiants de locuteur : speaker_0, speaker_1...
+    segments = []
+    lines = []
+    speaker_labels = {}
+    current_speaker = None
+    pieces = []
+    current_words = []
+
+    def label_for(speaker_id):
+        if speaker_id == "unknown":
+            return "?"
+        if speaker_id not in speaker_labels:
+            index = len(speaker_labels)
+            speaker_labels[speaker_id] = (
+                chr(65 + index)
+                if index < 26 else f"S{index + 1}"
+            )
+        return speaker_labels[speaker_id]
+
+    def flush_segment():
+        if not current_words:
+            return
+
+        text = "".join(pieces).strip()
+        if not text:
+            text = " ".join(
+                w["word"] for w in current_words
+            )
+
+        speaker = label_for(current_speaker)
+        segments.append({
+            "speaker": speaker,
+            "text": text,
+            "start": current_words[0]["start"],
+            "end": current_words[-1]["end"],
+            "words": current_words.copy(),
+        })
+        lines.append(f"{speaker}: {text}")
+
+    for token in result.get("words", []):
+        kind = token.get("type")
+
+        if kind == "spacing":
+            if pieces:
+                pieces.append(token.get("text", " "))
+            continue
+
+        if kind != "word":
+            continue
+
+        speaker_id = (
+            token.get("speaker_id")
+            or current_speaker
+            or "unknown"
+        )
+
+        if (
+            current_speaker is not None
+            and speaker_id != current_speaker
+        ):
+            flush_segment()
+            pieces = []
+            current_words = []
+
+        current_speaker = speaker_id
+        word_text = token.get("text", "")
+
+        if (
+            pieces
+            and not pieces[-1].endswith((" ", "\n"))
+            and not word_text.startswith(
+                (",", ".", "!", "?", ";", ":")
+            )
+        ):
+            pieces.append(" ")
+
+        pieces.append(word_text)
+
+        current_words.append({
+            "word": word_text,
+            "start": float(token["start"]),
+            "end": float(token["end"]),
+        })
+
+    flush_segment()
+
+    transcript = (
+        "\n".join(lines)
+        if lines else (result.get("text") or "").strip()
+    )
+
+    if not transcript:
+        raise RuntimeError(
+            "ElevenLabs n'a retourné aucun texte."
+        )
+
+    duration = time.perf_counter() - start
+
+    print(
+        f"[ELEVENLABS] {model} | "
+        f"{duration:.2f}s | "
+        f"{len(segments)} segments",
         flush=True,
     )
 
