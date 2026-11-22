@@ -1,0 +1,69 @@
+
+name: Linguateka - Benchmark ASR (37 videos)
+
+on:
+  workflow_dispatch:
+    inputs:
+      videos:
+        description: "Nombre de videos (0 = toutes)"
+        required: false
+        default: "2"
+        type: string
+
+jobs:
+  compare-asr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    permissions:
+      contents: read
+
+    defaults:
+      run:
+        working-directory: linguateka_benchmark_37_videos
+
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
+      ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+      TRANSCRIPTION_LANGUAGE: pl
+      JUDGE_MODEL: gpt-4.1-mini
+      MAX_ESTIMATED_USD: '10'
+      PYTHONUNBUFFERED: '1'
+
+    steps:
+      - name: Recuperer le depot
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Installer les dependances
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          python -m pip install --upgrade pip
+          pip install -r benchmark_requirements.txt
+
+      - name: Tests hors ligne
+        run: python -m unittest discover -s tests -v
+
+      - name: Verifier les 37 videos
+        run: python benchmark.py --dataset dataset.json --check
+
+      - name: Executer le benchmark
+        env:
+          LIMIT: ${{ inputs.videos }}
+        run: |
+          python benchmark.py --dataset dataset.json --out results --limit "${LIMIT:-0}"
+
+      - name: Sauvegarder les resultats
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linguateka-benchmark-results-${{ github.run_number }}
+          path: linguateka_benchmark_37_videos/results/
+          if-no-files-found: warn
+          retention-days: 30
