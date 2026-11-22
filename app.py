@@ -147,38 +147,58 @@ if TRANSCRIPTION_MODEL not in SUPPORTED_TRANSCRIPTION_MODELS:
     )
 
 
-def transcribe_video(video_path: Path) -> tuple[str, list[dict]]:
 
-    # AssemblyAI
+def transcribe_video(video_path: Path) -> tuple[str, list[dict]]:
+    """Renvoie (transcript, segments) selon le fournisseur."""
+
+    # 1. AssemblyAI
     if TRANSCRIPTION_PROVIDER == "assemblyai":
         result = transcribe_with_assemblyai(video_path)
         return result["transcript"], result["segments"]
 
-    # Deepgram
+    # 2. Deepgram
     if TRANSCRIPTION_PROVIDER == "deepgram":
         result = transcribe_with_deepgram(video_path)
         return result["transcript"], result["segments"]
 
-    # OpenAI
-    if TRANSCRIPTION_MODEL == "gpt-transcribe":
-        # Conserver ici ton code OpenAI existant
+    # 3. OpenAI
+    if TRANSCRIPTION_PROVIDER == "openai":
 
-        # Optionnel : TRANSCRIPTION_LANGUAGE=pl sur Railway pour tester le polonais.
-        # Par defaut, laisser vide pour autodetection et plusieurs langues.
-        lang = os.getenv("TRANSCRIPTION_LANGUAGE", "").strip().lower()
-        if lang:
-            options["languages"] = [lang]
+        if TRANSCRIPTION_MODEL == "gpt-transcribe":
+            options = {
+                "model": "gpt-transcribe",
+                "response_format": "json",
+            }
 
-        with open(video_path, "rb") as f:
-            tr = client.audio.transcriptions.create(file=f, **options)
+            lang = os.getenv(
+                "TRANSCRIPTION_LANGUAGE", ""
+            ).strip().lower()
 
-        transcript_text = (tr.text or "").strip()
-        if not transcript_text:
-            raise RuntimeError("Le modele gpt-transcribe n'a retourne aucun texte.")
-        return transcript_text, []
+            if lang:
+                options["languages"] = [lang]
 
-    # Modele historique, avec identification des locuteurs.
-    return transcribe_with_diarization(video_path)
+            with open(video_path, "rb") as f:
+                tr = client.audio.transcriptions.create(
+                    file=f,
+                    **options
+                )
+
+            transcript_text = (tr.text or "").strip()
+
+            if not transcript_text:
+                raise RuntimeError(
+                    "gpt-transcribe n'a retourne aucun texte."
+                )
+
+            return transcript_text, []
+
+        # Ancien modèle OpenAI avec diarisation
+        return transcribe_with_diarization(video_path)
+
+    raise ValueError(
+        f"Fournisseur inconnu : {TRANSCRIPTION_PROVIDER}"
+    )
+
 
 
 def transcribe_with_diarization(video_path: Path) -> tuple[str, list[dict]]:
