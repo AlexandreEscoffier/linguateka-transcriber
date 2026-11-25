@@ -819,3 +819,6 @@ def transcribe_with_elevenlabs(video_path: Path):
         "segments": segments,
     }
 
+
+from lesson_vocabulary import router as vocabulary_router
+app.include_router(vocabulary_router)
