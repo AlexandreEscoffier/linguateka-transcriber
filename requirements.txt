@@ -5,3 +5,4 @@ openai
 python-multipart
 prometheus-client
 requests
+imageio-ffmpeg

@@ -120,7 +120,9 @@ def download_instagram_video(url: str) -> Path:
     uid = uuid.uuid4().hex
     template = DOWNLOAD_DIR / f"{uid}.%(ext)s"
 
-    cmd = ["yt-dlp", "-f", "mp4", "-o", str(template), url]
+    # Scribe only needs audio. Some Reels serve video and sound separately.
+    media_format = "bestaudio/best/best*" if TRANSCRIPTION_PROVIDER == "elevenlabs" else "mp4"
+    cmd = ["yt-dlp", "--no-playlist", "-f", media_format, "-o", str(template), "--", url]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -671,7 +673,9 @@ def transcribe_with_assemblyai(video_path: Path):
 
 
 def transcribe_with_elevenlabs(video_path: Path, *, detect_language: bool = False):
-    import mimetypes
+    from tempfile import TemporaryDirectory
+    from imageio_ffmpeg import get_ffmpeg_exe
+    import wave
 
     api_key = os.environ["ELEVENLABS_API_KEY"]
     model = os.getenv("ELEVENLABS_MODEL", "scribe_v3")
@@ -694,22 +698,26 @@ def transcribe_with_elevenlabs(video_path: Path, *, detect_language: bool = Fals
     if not detect_language and language:
         payload["language_code"] = language
 
-    mime = (
-        mimetypes.guess_type(str(video_path))[0]
-        or "application/octet-stream"
-    )
-
-    # Envoyer directement la vidéo téléchargée par yt-dlp
-    with open(video_path, "rb") as video:
-        response = requests.post(
-            "https://api.elevenlabs.io/v1/speech-to-text",
-            headers=headers,
-            data=payload,
-            files={
-                "file": (video_path.name, video, mime)
-            },
-            timeout=(20, 240),
+    with TemporaryDirectory(prefix="linguateka-audio-") as directory:
+        audio_path = Path(directory) / "audio.wav"
+        conversion = subprocess.run(
+            [get_ffmpeg_exe(), "-nostdin", "-v", "error", "-i", str(video_path),
+             "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
+             "-c:a", "pcm_s16le", str(audio_path)],
+            capture_output=True, timeout=90,
         )
+        if conversion.returncode:
+            raise RuntimeError("source_audio_unreadable")
+        with wave.open(str(audio_path), "rb") as wav:
+            if not wav.getnframes():
+                raise RuntimeError("source_audio_unreadable")
+        with audio_path.open("rb") as audio:
+            response = requests.post(
+                "https://api.elevenlabs.io/v1/speech-to-text",
+                headers=headers, data=payload,
+                files={"file": ("audio.wav", audio, "audio/wav")},
+                timeout=(20, 240),
+            )
 
     if not response.ok:
         raise RuntimeError(
