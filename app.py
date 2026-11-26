@@ -47,6 +47,7 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 
 class TranscribeRequest(BaseModel):
     url: str
+    detect_language: bool = False
 
 
 class WordTimestamp(BaseModel):
@@ -64,6 +65,7 @@ class Segment(BaseModel):
 
 
 class TranscribeResponse(BaseModel):
+    language_code: str | None = None
     transcript: str
     segments: list[Segment]
 
@@ -327,7 +329,13 @@ async def transcribe_instagram(body: TranscribeRequest):
         print(f"[LINGUATEKA] Modele utilise : {TRANSCRIPTION_MODEL}", flush=True)
 
         transcription_start = time.perf_counter()
-        transcript_text, segs = transcribe_video(video_path)
+        language_code = None
+        if body.detect_language and TRANSCRIPTION_PROVIDER == "elevenlabs":
+            result = transcribe_with_elevenlabs(video_path, detect_language=True)
+            transcript_text, segs = result["transcript"], result["segments"]
+            language_code = result.get("language_code")
+        else:
+            transcript_text, segs = transcribe_video(video_path)
         transcription_duration = time.perf_counter() - transcription_start
 
         print(
@@ -348,6 +356,7 @@ async def transcribe_instagram(body: TranscribeRequest):
             )
 
         return TranscribeResponse(
+            language_code=language_code,
             transcript=transcript_text,
             segments=[Segment(**s) for s in segs],
         )
@@ -661,7 +670,7 @@ def transcribe_with_assemblyai(video_path: Path):
 
 
 
-def transcribe_with_elevenlabs(video_path: Path):
+def transcribe_with_elevenlabs(video_path: Path, *, detect_language: bool = False):
     import mimetypes
 
     api_key = os.environ["ELEVENLABS_API_KEY"]
@@ -676,12 +685,14 @@ def transcribe_with_elevenlabs(video_path: Path):
 
     payload = {
         "model_id": model,
-        "language_code": language,
         "diarize": "true",
         "timestamps_granularity": "word",
         "tag_audio_events": "false",
         "no_verbatim": "false",
     }
+
+    if not detect_language and language:
+        payload["language_code"] = language
 
     mime = (
         mimetypes.guess_type(str(video_path))[0]
@@ -815,6 +826,7 @@ def transcribe_with_elevenlabs(video_path: Path):
     )
 
     return {
+        "language_code": result.get("language_code"),
         "transcript": transcript,
         "segments": segments,
     }
