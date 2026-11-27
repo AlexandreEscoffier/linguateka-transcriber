@@ -4,6 +4,7 @@ import uuid
 import os
 import json
 import requests
+from yt_dlp_journal import run_logged
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -123,7 +124,7 @@ def download_instagram_video(url: str) -> Path:
     # Scribe only needs audio. Some Reels serve video and sound separately.
     media_format = "bestaudio/best/best*" if TRANSCRIPTION_PROVIDER == "elevenlabs" else "mp4"
     cmd = ["yt-dlp", "--no-playlist", "-f", media_format, "-o", str(template), "--", url]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = run_logged(cmd, "audio", url)
 
     if result.returncode != 0:
         raise RuntimeError("yt-dlp error: " + result.stderr)
@@ -278,7 +279,7 @@ def translate_text_with_openai(text: str, targets: list[str]) -> dict[str, str]:
 
 def fetch_thumbnail_url(url: str) -> str:
     cmd = ["yt-dlp", "-J", url]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = run_logged(cmd, "thumbnail", url)
 
     if result.returncode != 0:
         raise RuntimeError("yt-dlp error: " + result.stderr)
